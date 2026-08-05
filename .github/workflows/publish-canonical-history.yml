@@ -1,0 +1,59 @@
+name: Publish canonical F2 authenticated history
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - bootstrap/authenticated-history.json.xz.b64
+      - .github/workflows/publish-canonical-history.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: m0-a15-f2-history-publication
+  cancel-in-progress: false
+
+jobs:
+  publish-history:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decode and verify canonical history
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p external-evidence/m0-a15-f2
+          base64 --decode bootstrap/authenticated-history.json.xz.b64 > /tmp/authenticated-history.json.xz
+          xz --decompress --stdout /tmp/authenticated-history.json.xz > /tmp/authenticated-history.json
+          test "$(wc -c < /tmp/authenticated-history.json | tr -d ' ')" = "48010"
+          test "$(sha256sum /tmp/authenticated-history.json | awk '{print $1}')" = "5cc59426485811978f8d404681abbd309aa56121854daf963a0f6c5dba0d6965"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          raw = Path('/tmp/authenticated-history.json').read_bytes()
+          value = json.loads(raw.decode('utf-8'))
+          canonical = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False).encode('utf-8')
+          if raw != canonical:
+              raise SystemExit('history is not byte-exact canonical JSON')
+          PY
+          cp /tmp/authenticated-history.json external-evidence/m0-a15-f2/authenticated-history.json
+
+      - name: Commit immutable carrier object
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- external-evidence/m0-a15-f2/authenticated-history.json && \
+             git ls-files --error-unmatch external-evidence/m0-a15-f2/authenticated-history.json >/dev/null 2>&1; then
+            echo "Canonical history already published."
+            exit 0
+          fi
+          git config user.name "eigiib-f2-carrier-publisher"
+          git config user.email "eigiib-f2-carrier-publisher@users.noreply.github.com"
+          git add external-evidence/m0-a15-f2/authenticated-history.json
+          git commit -m "Publish canonical M0-A15-F2 authenticated history"
+          git push origin HEAD:main
