@@ -45,7 +45,12 @@ jobs:
           python -m py_compile assemble_ingress_quorum_and_replay_f1.py
 
       - name: Assemble Alpha and Beta and run exact F1 replay
+        shell: bash
         run: |
+          set -euo pipefail
+          cp \
+            external-evidence/m0-a15-f2/readbacks/observer-alpha-ingress/observer-profile.json \
+            external-evidence/m0-a15-f2/readbacks/observer-alpha-ingress/observer-alpha-profile.json
           python assemble_ingress_quorum_and_replay_f1.py \
             --carrier-root . \
             --norm-root norm \
