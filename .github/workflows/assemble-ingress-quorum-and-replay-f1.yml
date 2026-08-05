@@ -1,0 +1,77 @@
+name: M0-A15-F2 Assemble ingress quorum and exact F1 replay
+
+on:
+  push:
+    paths:
+      - .github/workflows/assemble-ingress-quorum-and-replay-f1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  assemble-and-replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout external carrier
+        uses: actions/checkout@v4
+
+      - name: Checkout exact normative verifier
+        uses: actions/checkout@v4
+        with:
+          repository: Nico59000/EIGIIB-norm
+          ref: 91cc92a4928382b09868a65a4c57e657e4bdf4ef
+          fetch-depth: 0
+          path: norm
+
+      - name: Set up CPython 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install exact replay dependencies
+        run: |
+          python -m pip install --disable-pip-version-check cryptography jsonschema referencing
+
+      - name: Decode and authenticate replay program
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d bootstrap/assemble_ingress_quorum_and_replay_f1.py.xz.b64 \
+            | xz -d > assemble_ingress_quorum_and_replay_f1.py
+          echo "cb69f00ca459acd1e25d42afce4a6729869171d183a8ae95884e3ddc3b06bd97  assemble_ingress_quorum_and_replay_f1.py" \
+            | sha256sum -c -
+          python -m py_compile assemble_ingress_quorum_and_replay_f1.py
+
+      - name: Assemble Alpha and Beta and run exact F1 replay
+        run: |
+          python assemble_ingress_quorum_and_replay_f1.py \
+            --carrier-root . \
+            --norm-root norm \
+            --output-dir replay-artifacts
+
+      - name: Freeze execution environment and artifact digests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python --version > replay-artifacts/python-version.txt
+          python -m pip freeze | LC_ALL=C sort > replay-artifacts/python-packages.txt
+          {
+            echo "carrierWorkflowHead=${GITHUB_SHA}"
+            echo "carrierWorkflowRunId=${GITHUB_RUN_ID}"
+            echo "carrierWorkflowRunAttempt=${GITHUB_RUN_ATTEMPT}"
+            echo "normHead=$(git -C norm rev-parse HEAD)"
+            echo "normTree=$(git -C norm rev-parse 'HEAD^{tree}')"
+          } > replay-artifacts/execution-bindings.txt
+          find replay-artifacts -type f ! -name SHA256SUMS -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > replay-artifacts/SHA256SUMS
+
+      - name: Upload ingress quorum and F1 replay evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: m0-a15-f2-ingress-quorum-f1-replay-${{ github.run_id }}-${{ github.run_attempt }}
+          path: replay-artifacts/
+          if-no-files-found: error
+          retention-days: 90
