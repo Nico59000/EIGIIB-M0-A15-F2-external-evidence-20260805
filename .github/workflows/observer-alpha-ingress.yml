@@ -1,0 +1,251 @@
+name: M0-A15-F2 Observer Alpha ingress readback
+
+on:
+  push:
+    paths:
+      - .github/workflows/observer-alpha-ingress.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m0-a15-f2-observer-alpha-ingress
+  cancel-in-progress: false
+
+env:
+  CARRIER_URL: https://raw.githubusercontent.com/Nico59000/EIGIIB-M0-A15-F2-external-evidence-20260805/977581dee414851bfcfc1abd74eb44032f49933a/external-evidence/m0-a15-f2/authenticated-history.json
+  CARRIER_ID: github-eigiib-m0-a15-f2-history-20260805-01
+  EXPECTED_HISTORY_DIGEST: 5cc59426485811978f8d404681abbd309aa56121854daf963a0f6c5dba0d6965
+  INGRESS_RECEIPT_DIGEST: 87ee516f5712c092af37609dd05b086a723acb61021f2adb669b8fdf7b854c6e
+  EXPECTED_CONTENT_LENGTH: "48010"
+
+jobs:
+  readback:
+    name: observer-alpha-ingress-readback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout observer workflow revision
+        uses: actions/checkout@v4
+
+      - name: Install Ed25519 implementation
+        run: python -m pip install --disable-pip-version-check --no-cache-dir 'cryptography==45.0.6'
+
+      - name: Retrieve immutable carrier bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/received
+          started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          curl \
+            --proto '=https' \
+            --tlsv1.2 \
+            --location \
+            --fail \
+            --silent \
+            --show-error \
+            --dump-header artifacts/response-headers.txt \
+            --write-out '%{http_code}\n%{url_effective}\n%{content_type}\n%{size_download}\n' \
+            --output artifacts/received/authenticated-history.json \
+            "$CARRIER_URL" > artifacts/curl-metadata.txt
+          completed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '%s\n' "$started_at" > artifacts/retrieval-started-at.txt
+          printf '%s\n' "$completed_at" > artifacts/retrieval-completed-at.txt
+
+      - name: Verify, sign and record readback
+        shell: bash
+        run: |
+          set -euo pipefail
+          export OBSERVER_PRIVATE_KEY_PATH="$RUNNER_TEMP/observer-alpha-ed25519.pem"
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          from cryptography.hazmat.primitives import serialization
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+          root = pathlib.Path('artifacts')
+          raw = (root / 'received/authenticated-history.json').read_bytes()
+          parsed = json.loads(raw.decode('utf-8'))
+
+          def canonical_bytes(value):
+              return json.dumps(
+                  value,
+                  sort_keys=True,
+                  separators=(',', ':'),
+                  ensure_ascii=False,
+                  allow_nan=False,
+              ).encode('utf-8')
+
+          canonical = canonical_bytes(parsed)
+          raw_digest = hashlib.sha256(raw).hexdigest()
+          canonical_digest = hashlib.sha256(canonical).hexdigest()
+          expected_digest = os.environ['EXPECTED_HISTORY_DIGEST']
+          expected_length = int(os.environ['EXPECTED_CONTENT_LENGTH'])
+          if raw != canonical:
+              raise SystemExit('history-not-byte-exact-canonical')
+          if len(raw) != expected_length:
+              raise SystemExit('history-content-length-mismatch')
+          if raw_digest != expected_digest or canonical_digest != expected_digest:
+              raise SystemExit('history-digest-mismatch')
+
+          metadata = (root / 'curl-metadata.txt').read_text(encoding='utf-8').splitlines()
+          if len(metadata) != 4:
+              raise SystemExit('curl-metadata-shape-invalid')
+          http_status, effective_url, content_type, downloaded_size = metadata
+          requested_url = os.environ['CARRIER_URL']
+          if http_status != '200':
+              raise SystemExit('carrier-http-status-invalid')
+          if effective_url != requested_url:
+              raise SystemExit('carrier-effective-url-mismatch')
+          if int(downloaded_size) != expected_length:
+              raise SystemExit('carrier-downloaded-size-mismatch')
+          if not re.search(r'/[0-9a-f]{40}/', requested_url):
+              raise SystemExit('carrier-url-not-commit-bound')
+
+          header_lines = (root / 'response-headers.txt').read_text(encoding='utf-8').splitlines()
+          headers = {}
+          for line in header_lines:
+              if ':' in line:
+                  key, value = line.split(':', 1)
+                  headers[key.strip().lower()] = value.strip()
+
+          observed_at = (root / 'retrieval-completed-at.txt').read_text(encoding='utf-8').strip()
+          started_at = (root / 'retrieval-started-at.txt').read_text(encoding='utf-8').strip()
+
+          private_key = Ed25519PrivateKey.generate()
+          private_path = pathlib.Path(os.environ['OBSERVER_PRIVATE_KEY_PATH'])
+          private_path.write_bytes(private_key.private_bytes(
+              encoding=serialization.Encoding.PEM,
+              format=serialization.PrivateFormat.PKCS8,
+              encryption_algorithm=serialization.NoEncryption(),
+          ))
+          public_raw = private_key.public_key().public_bytes(
+              encoding=serialization.Encoding.Raw,
+              format=serialization.PublicFormat.Raw,
+          )
+
+          key_id = f"observer-alpha-ingress-ed25519-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}"
+          profile = {
+              'principalId': 'm0-a15-f2-observer-alpha-ingress-20260805',
+              'role': 'observer',
+              'controlDomainId': 'github-actions-observer-alpha-ingress-control',
+              'identityRoot': 'github-actions:Nico59000/EIGIIB-M0-A15-F2-external-evidence-20260805:observer-alpha',
+              'providerOperator': 'github-actions-hosted-runner-observer-alpha',
+              'networkPath': 'github-actions-ubuntu-24.04-public-egress-alpha',
+              'implementation': 'eigiib-m0-a15-f2-observer-alpha-inline-python-1',
+              'keyId': key_id,
+              'algorithm': 'ed25519',
+              'publicKey': base64.b64encode(public_raw).decode('ascii'),
+          }
+          payload = {
+              'recordType': 'external-history-readback',
+              'observerId': profile['principalId'],
+              'controlDomainId': profile['controlDomainId'],
+              'historyDigest': expected_digest,
+              'ingressReceiptDigest': os.environ['INGRESS_RECEIPT_DIGEST'],
+              'carrierId': os.environ['CARRIER_ID'],
+              'carrierLocator': requested_url,
+              'observedAt': observed_at,
+          }
+          signature = private_key.sign(canonical_bytes(payload))
+          envelope = {
+              'payload': payload,
+              'signature': {
+                  'algorithm': 'ed25519',
+                  'keyId': key_id,
+                  'value': base64.b64encode(signature).decode('ascii'),
+              },
+          }
+          envelope_digest = hashlib.sha256(canonical_bytes(envelope)).hexdigest()
+          payload_digest = hashlib.sha256(canonical_bytes(payload)).hexdigest()
+          record = {
+              'standard': 'EIGIIB-M0-A15-F2-OBSERVER-READBACK-1.0',
+              'mode': 'ingress',
+              'observerProfile': profile,
+              'pipeline': {
+                  'CI': 'true',
+                  'GITHUB_ACTIONS': os.environ.get('GITHUB_ACTIONS'),
+                  'GITHUB_REPOSITORY': os.environ.get('GITHUB_REPOSITORY'),
+                  'GITHUB_SHA': os.environ.get('GITHUB_SHA'),
+                  'GITHUB_REF': os.environ.get('GITHUB_REF'),
+                  'GITHUB_RUN_ID': os.environ.get('GITHUB_RUN_ID'),
+                  'GITHUB_RUN_NUMBER': os.environ.get('GITHUB_RUN_NUMBER'),
+                  'GITHUB_RUN_ATTEMPT': os.environ.get('GITHUB_RUN_ATTEMPT'),
+                  'RUNNER_NAME': os.environ.get('RUNNER_NAME'),
+                  'RUNNER_OS': os.environ.get('RUNNER_OS'),
+                  'RUNNER_ARCH': os.environ.get('RUNNER_ARCH'),
+                  'workflowRunUrl': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
+              },
+              'source': {
+                  'requestedUrl': requested_url,
+                  'effectiveUrl': effective_url,
+                  'httpStatus': int(http_status),
+                  'contentType': content_type or None,
+                  'contentLengthHeader': headers.get('content-length'),
+                  'etag': headers.get('etag'),
+                  'lastModified': headers.get('last-modified'),
+                  'serverDate': headers.get('date'),
+                  'retrievalStartedAt': started_at,
+                  'retrievalCompletedAt': observed_at,
+              },
+              'download': {
+                  'rawLength': len(raw),
+                  'rawSha256': raw_digest,
+                  'canonicalLength': len(canonical),
+                  'canonicalSha256': canonical_digest,
+                  'byteExactCanonical': raw == canonical,
+              },
+              'derived': {'historyDigest': canonical_digest},
+              'signedPayloadDigest': payload_digest,
+              'signedEnvelopeDigest': envelope_digest,
+              'privateKeyDisposition': 'ephemeral-runner-key-destroyed-after-signing',
+              'scopeBoundary': 'ingress-readback-only; key not retained for activation readback',
+          }
+
+          def write_json(path, value):
+              pathlib.Path(path).write_bytes(canonical_bytes(value) + b'\n')
+
+          write_json(root / 'observer-alpha-profile.json', profile)
+          write_json(root / 'ingress-readback-envelope.json', envelope)
+          write_json(root / 'ingress-readback-record.json', record)
+
+          private_key.public_key().verify(signature, canonical_bytes(payload))
+          private_path.unlink()
+          print(json.dumps({
+              'historyDigest': canonical_digest,
+              'payloadDigest': payload_digest,
+              'envelopeDigest': envelope_digest,
+              'observedAt': observed_at,
+              'keyId': key_id,
+          }, sort_keys=True))
+          PY
+
+      - name: Verify private-key destruction and freeze checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/observer-alpha-ed25519.pem"
+          if grep -R --binary-files=without-match -E 'BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY' artifacts; then
+            echo 'private-key-material-found-in-artifacts' >&2
+            exit 1
+          fi
+          sha256sum \
+            artifacts/observer-alpha-profile.json \
+            artifacts/ingress-readback-envelope.json \
+            artifacts/ingress-readback-record.json \
+            artifacts/received/authenticated-history.json \
+            | sort > artifacts/SHA256SUMS
+
+      - name: Upload signed Observer Alpha readback
+        uses: actions/upload-artifact@v4
+        with:
+          name: m0-a15-f2-observer-alpha-ingress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
