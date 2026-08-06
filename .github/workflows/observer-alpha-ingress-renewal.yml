@@ -1,0 +1,58 @@
+name: M0-A15-F2 Observer Alpha renewed ingress readback
+
+on:
+  push:
+    paths:
+      - .github/workflows/observer-alpha-ingress-renewal.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: m0-a15-f2-observer-alpha-ingress-renewal
+  cancel-in-progress: false
+
+env:
+  CARRIER_URL: https://raw.githubusercontent.com/Nico59000/EIGIIB-M0-A15-F2-external-evidence-20260805/977581dee414851bfcfc1abd74eb44032f49933a/external-evidence/m0-a15-f2/authenticated-history.json
+  CARRIER_ID: github-eigiib-m0-a15-f2-history-20260805-01
+  EXPECTED_HISTORY_DIGEST: 5cc59426485811978f8d404681abbd309aa56121854daf963a0f6c5dba0d6965
+  INGRESS_RECEIPT_DIGEST: f9a0d4548634dd3c3d95013ba8eb0f08c02b7ce6bf04f420c9a0d50cc8666289
+  EXPECTED_CONTENT_LENGTH: "48010"
+
+jobs:
+  readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: python -m pip install --disable-pip-version-check --no-cache-dir 'cryptography==46.0.4'
+      - name: Retrieve immutable carrier bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/received
+          date -u +%Y-%m-%dT%H:%M:%SZ > artifacts/retrieval-started-at.txt
+          curl --proto '=https' --tlsv1.2 --location --fail --silent --show-error \
+            --write-out '%{http_code}\n%{url_effective}\n%{content_type}\n%{size_download}\n' \
+            --output artifacts/received/authenticated-history.json \
+            "$CARRIER_URL" > artifacts/curl-metadata.txt
+          date -u +%Y-%m-%dT%H:%M:%SZ > artifacts/retrieval-completed-at.txt
+      - name: Verify and sign renewed readback
+        run: python tools/m0_a15_f2_observer_alpha_ingress_renewal.py
+      - name: Freeze checksums and reject private keys
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -R --binary-files=without-match -E 'BEGIN ([A-Z0-9 ]+ )?PRIVATE KEY' artifacts; then
+            exit 1
+          fi
+          sha256sum artifacts/observer-alpha-profile.json artifacts/ingress-readback-envelope.json \
+            artifacts/ingress-readback-record.json artifacts/received/authenticated-history.json | sort > artifacts/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: m0-a15-f2-observer-alpha-ingress-renewal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 9
