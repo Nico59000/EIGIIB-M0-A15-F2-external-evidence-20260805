@@ -42,11 +42,12 @@ jobs:
           test -f external-evidence/m0-a15-f2/activation/issuance/activation-authority-profile.json
           test -f external-evidence/m0-a15-f2/activation/issuance/activation-envelope.json
           python -m py_compile tools/m0_a15_f2_activation_witness_alpha.py
+          python -m py_compile tools/m0_a15_f2_activation_witness_alpha_renewed.py
 
       - name: Verify activation and issue ephemeral endorsement
         run: |
           rm -rf witness-artifacts
-          python tools/m0_a15_f2_activation_witness_alpha.py \
+          python tools/m0_a15_f2_activation_witness_alpha_renewed.py \
             --authority-profile external-evidence/m0-a15-f2/activation/issuance/activation-authority-profile.json \
             --activation-envelope external-evidence/m0-a15-f2/activation/issuance/activation-envelope.json \
             --output-dir witness-artifacts
