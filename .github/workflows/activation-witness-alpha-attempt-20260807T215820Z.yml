@@ -1,0 +1,60 @@
+name: M0-A15-F2 activation witness Alpha / attempt-20260807T215820Z
+run-name: M0-A15-F2 witness Alpha / attempt-20260807T215820Z / ${{ github.sha }} / ${{ github.run_id }}.${{ github.run_attempt }}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'external-evidence/m0-a15-f2/activation/attempts/attempt-20260807T215820Z/issuance/activation-authority-profile.json'
+      - 'external-evidence/m0-a15-f2/activation/attempts/attempt-20260807T215820Z/issuance/activation-envelope.json'
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  witness-alpha:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact carrier revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          fetch-depth: 1
+
+      - name: Set up CPython 3.13.14
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13.14'
+
+      - name: Install pinned Ed25519 provider
+        run: python -m pip install --disable-pip-version-check --no-input cryptography==46.0.4
+
+      - name: Verify activation and issue ephemeral endorsement
+        run: |
+          rm -rf witness-artifacts
+          python tools/m0_a15_f2_activation_witness_alpha_attempt_20260807T015051Z.py \
+            --authority-profile external-evidence/m0-a15-f2/activation/attempts/attempt-20260807T215820Z/issuance/activation-authority-profile.json \
+            --activation-envelope external-evidence/m0-a15-f2/activation/attempts/attempt-20260807T215820Z/issuance/activation-envelope.json \
+            --output-dir witness-artifacts
+
+      - name: Verify artifact integrity and secret hygiene
+        run: |
+          cd witness-artifacts
+          sha256sum -c SHA256SUMS
+          ! grep -RIl -- 'BEGIN .*PRIVATE KEY' . | grep .
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 6
+
+      - name: Upload signed Witness Alpha evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: m0-a15-f2-activation-witness-alpha-attempt-20260807T215820Z-${{ github.run_id }}-${{ github.run_attempt }}
+          path: witness-artifacts
+          retention-days: 90
+          if-no-files-found: error
